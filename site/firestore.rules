@@ -1,0 +1,72 @@
+rules_version = '2';
+// Regras do Painel RP Dellamed.
+// Cole este arquivo inteiro em Firebase › Firestore Database › Regras e clique em Publicar.
+// ANTES de publicar, troque admin_inicial@dellamed.com.br pelo e-mail Google de quem vai administrar
+// o painel, em letras minúsculas (pode ter mais de um: ['a@dellamed.com.br', 'b@dellamed.com.br']).
+// Esse e-mail entra como administrador no
+// primeiro acesso; os demais usuários são cadastrados pela tela Administração.
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function logado() { return request.auth != null && request.auth.token.email_verified == true; }
+    function meuEmail() { return request.auth.token.email.lower(); }
+    function adminInicial() { return logado() && meuEmail() in ['kimberlynunes74@gmail.com']; }
+    function perfilRef() { return /databases/$(database)/documents/usuarios/$(meuEmail()); }
+    function ativo() { return logado() && exists(perfilRef()) && get(perfilRef()).data.ativo == true; }
+    function papel() { return get(perfilRef()).data.papel; }
+
+    function podeLer() { return adminInicial() || ativo(); }
+    function podeEditar() { return adminInicial() || (ativo() && papel() in ['admin', 'editor']); }
+    function ehAdmin() { return adminInicial() || (ativo() && papel() == 'admin'); }
+
+    // Eventos e patrocínios: todos os usuários liberados leem; editores e administradores alteram;
+    // só administradores excluem.
+    match /eventos/{id} {
+      allow read: if podeLer();
+      allow create, update: if podeEditar();
+      allow delete: if ehAdmin();
+    }
+    match /patrocinios/{id} {
+      allow read: if podeLer();
+      allow create, update: if podeEditar();
+      allow delete: if ehAdmin();
+    }
+    match /geral/{id} {
+      allow read: if podeLer();
+      allow write: if podeEditar();
+    }
+
+    // Usuários: cada pessoa lê o próprio cadastro (para o login saber se ela tem acesso);
+    // usuários liberados leem a lista (para mostrar "alterado por"); só administradores cadastram.
+    // A própria pessoa só pode atualizar o último acesso, o nome e a foto do Google.
+    match /usuarios/{email} {
+      allow read: if logado() && (email == meuEmail() || podeLer());
+      allow create, delete: if ehAdmin();
+      allow update: if ehAdmin()
+        || (logado() && email == meuEmail() && ativo()
+            && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['ultimoAcesso', 'nomeGoogle', 'foto']));
+    }
+
+    // Registro de alterações: ninguém apaga nem reescreve. Quem fez a alteração pode só
+    // acrescentar mudanças ao próprio registro nos primeiros 20 minutos.
+    match /logs/{id} {
+      allow read: if ehAdmin();
+      allow create: if podeLer()
+        && request.resource.data.email == meuEmail()
+        && request.resource.data.quando == request.time;
+      allow update: if podeLer()
+        && resource.data.email == meuEmail()
+        && request.time < resource.data.quando + duration.value(20, 'm')
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['fim', 'mudancas', 'vezes', 'nomeDoc'])
+        && request.resource.data.mudancas.size() <= 300;
+      allow delete: if false;
+    }
+
+    // Versão anterior de cada documento, guardada a cada registro, para o administrador restaurar.
+    match /versoes/{id} {
+      allow read: if ehAdmin();
+      allow create: if podeLer() && request.resource.data.email == meuEmail();
+      allow update, delete: if false;
+    }
+  }
+}
